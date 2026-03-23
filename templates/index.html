@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Python Orchestrator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f4f7f6; font-family: 'Segoe UI', sans-serif; }
+        .stats-card { background: white; border-radius: 10px; padding: 20px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+        .dot-running { background-color: #28a745; box-shadow: 0 0 8px #28a745; }
+        .dot-stopped { background-color: #dc3545; }
+    </style>
+</head>
+<body class="container py-4">
+    <div class="row mb-4 align-items-center">
+        <div class="col-md-6">
+            <h2 class="fw-bold text-dark m-0">🐍 Script Manager</h2>
+            <p class="text-muted">Tableau de bord de monitoring</p>
+        </div>
+        <div class="col-md-3">
+            <div class="stats-card">
+                <h3 class="fw-bold text-primary m-0">{{ total_count }}</h3>
+                <small class="text-muted text-uppercase">Scripts Totaux</small>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stats-card">
+                <h3 class="fw-bold text-success m-0">{{ running_count }}</h3>
+                <small class="text-muted text-uppercase">En cours d'exécution</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-flex justify-content-between mb-3">
+        <button class="btn btn-primary px-4 shadow-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addFormCollapse">
+            + Ajouter un nouveau script
+        </button>
+        <a href="/logs/manager" target="_blank" class="btn btn-outline-secondary">Logs Serveur</a>
+    </div>
+
+    <div class="collapse mb-4" id="addFormCollapse">
+        <div class="card border-0 shadow-sm p-4">
+            <form action="/add" method="post">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label fw-bold">Nom personnalisé</label>
+                        <input type="text" name="name" class="form-control" placeholder="Ex: Mon Robot Data" required>
+                    </div>
+                    <div class="col-md-8">
+                        <label class="form-label fw-bold">Chemin du script .py</label>
+                        <input type="text" name="path" class="form-control" placeholder="C:/chemin/script.py" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold">Mode Programmation</label>
+                        <select name="cron_mode" id="cron_mode" class="form-select" onchange="toggleCronMode()">
+                            <option value="simple">Générateur Simple</option>
+                            <option value="manual">Manuel (Cron Expert)</option>
+                        </select>
+                    </div>
+                    <div id="simple_fields" class="col-md-7 row g-2">
+                        <div class="col-md-4"><label class="small">Fréquence</label>
+                            <select name="freq" class="form-select form-select-sm">
+                                <option value="minutes">Minutes</option><option value="hourly">Heures</option>
+                                <option value="daily">Jours</option><option value="weekly">Semaines</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2"><label class="small">Min</label><input type="number" name="s_min" class="form-control form-control-sm" value="0"></div>
+                        <div class="col-md-2"><label class="small">Heure</label><input type="number" name="s_hour" class="form-control form-control-sm" value="0"></div>
+                        <div class="col-md-4"><label class="small">Jour (0-6)</label><input type="text" name="s_day" class="form-control form-control-sm" value="*"></div>
+                    </div>
+                    <div id="manual_fields" class="col-md-7" style="display:none;">
+                        <label class="form-label fw-bold">Cron Expression</label>
+                        <input type="text" name="cron" class="form-control" placeholder="*/5 * * * *">
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button type="submit" class="btn btn-success w-100">Enregistrer</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="table-responsive bg-white rounded shadow-sm">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-dark">
+                <tr>
+                    <th>Statut</th>
+                    <th>Nom & Chemin</th>
+                    <th>Planning / Prochain</th>
+                    <th>Dernière exécution</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for id, s in scripts.items() %}
+                <tr>
+                    <td>
+                        {% if running_status[id] %}
+                        <span class="badge rounded-pill bg-success-subtle text-success border border-success">
+                            <span class="status-dot dot-running"></span> Actif
+                        </span>
+                        {% else %}
+                        <span class="badge rounded-pill bg-light text-muted border">
+                            <span class="status-dot dot-stopped"></span> Off
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="fw-bold">{{ s.name if s.name else s.path.split('/')[-1].split('\\\\')[-1] }}</div>
+                        <div class="text-muted small">{{ s.path }}</div>
+                    </td>
+                    <td>
+                        <span class="badge bg-info text-dark">{{ s.cron if s.cron else 'Manuel' }}</span>
+                        <div class="small text-muted mt-1">Next: {{ next_runs[id] }}</div>
+                    </td>
+                    <td class="small text-muted">{{ s.last_run if s.last_run else '-' }}</td>
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm">
+                            <a href="/start/{{ id }}" class="btn btn-success">▶</a>
+                            <a href="/stop/{{ id }}" class="btn btn-warning">⏹</a>
+                            <a href="/view_logs/{{ id }}" class="btn btn-info text-white">Logs</a>
+                            <a href="/delete/{{ id }}" class="btn btn-danger" onclick="return confirm('Supprimer ?')">🗑</a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function toggleCronMode() {
+            const mode = document.getElementById('cron_mode').value;
+            document.getElementById('simple_fields').style.display = (mode === 'simple') ? 'flex' : 'none';
+            document.getElementById('manual_fields').style.display = (mode === 'manual') ? 'block' : 'none';
+        }
+    </script>
+</body>
+</html>
