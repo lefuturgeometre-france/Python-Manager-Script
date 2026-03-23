@@ -3,31 +3,42 @@ import subprocess
 import json
 import uuid
 import sys
-from flask import Flask, render_template, request, redirect
+from functools import wraps
+from flask import Flask, render_template, request, redirect, session, url_for
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Chargement des variables d'environnement
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "dev-key-default")
 
 # Configuration via .env
 CONFIG_FILE = os.getenv("CONFIG_FILE", "scripts_config.json")
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 SERVER_LOG = os.path.join(LOG_DIR, os.getenv("SERVER_LOG_NAME", "manager_server.log"))
 PORT = int(os.getenv("FLASK_PORT", 5000))
+AUTH_USER = os.getenv("AUTH_USER")
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# --- LOGS DOUBLE SORTIE (Console + Fichier) ---
+# --- SÉCURITÉ (Décorateur) ---
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# --- LOGS DOUBLE SORTIE ---
 class Tee(object):
     def __init__(self, *files): self.files = files
     def write(self, obj):
         for f in self.files:
-            f.write(obj)
-            f.flush()
+            f.write(obj); f.flush()
     def flush(self):
         for f in self.files: f.flush()
 
@@ -40,7 +51,7 @@ processes = {}
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# --- FONCTIONS LOGIQUE ---
+# --- LOGIQUE SCRIPTS ---
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f: return json.load(f)
@@ -67,36 +78,45 @@ def run_script(script_id):
     config = load_config()
     script = config.get(script_id)
     if not script or is_proc_running(script_id): return
-
-    # Mise à jour de la date dans l'interface
     config[script_id]['last_run'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_config(config)
-
     log_path = os.path.join(LOG_DIR, f"{script_id}.log")
-    
-    # --- RESTAURATION DE L'EN-TÊTE DE LOG DEMANDÉ ---
     with open(log_path, "a", encoding='utf-8', errors='replace') as log_file:
         log_file.write(f"\n--- [START] {datetime.now()} ---\n")
-
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    
     try:
         proc = subprocess.Popen(
             ["python", os.path.basename(script['path'])],
             cwd=os.path.dirname(script['path']),
             stdout=open(log_path, "a", encoding='utf-8', errors='replace'),
-            stderr=subprocess.STDOUT, 
-            text=True, 
-            env=env
+            stderr=subprocess.STDOUT, text=True, env=env
         )
         processes[script_id] = proc
-    except Exception as e: 
-        print(f"Erreur lancement {script_id}: {e}")
+    except Exception as e: print(f"Erreur lancement {script_id}: {e}")
 
-# --- ROUTES ---
+# --- ROUTES AUTHENTIFICATION ---
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        if request.form['username'] == AUTH_USER and request.form['password'] == AUTH_PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            error = "Identifiants invalides."
+    return render_template('login.html', error=error)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
+# --- ROUTES DASHBOARD (Protégées) ---
 
 @app.route('/')
+@login_required
 def index():
     config = load_config()
     next_runs, running_status = {}, {}
@@ -107,30 +127,18 @@ def index():
         is_running = is_proc_running(sid)
         running_status[sid] = is_running
         if is_running: running_count += 1
-    
-    return render_template('index.html', 
-                           scripts=config, 
-                           next_runs=next_runs, 
-                           running_status=running_status,
-                           total_count=len(config),
-                           running_count=running_count)
+    return render_template('index.html', scripts=config, next_runs=next_runs, 
+                           running_status=running_status, total_count=len(config), running_count=running_count)
 
 @app.route('/add', methods=['POST'])
+@login_required
 def add_script():
     name = request.form.get('name', '').strip()
     path = request.form.get('path', '').strip().replace('"', '')
     mode = request.form.get('cron_mode')
-    
-    if mode == 'manual':
-        cron = request.form.get('cron', '').strip()
-    else:
-        cron = build_cron_string(
-            request.form.get('freq'), 
-            request.form.get('s_min', '0'), 
-            request.form.get('s_hour', '0'), 
-            request.form.get('s_day', '*')
-        )
-
+    cron = request.form.get('cron', '').strip() if mode == 'manual' else build_cron_string(
+        request.form.get('freq'), request.form.get('s_min', '0'), request.form.get('s_hour', '0'), request.form.get('s_day', '*')
+    )
     if os.path.exists(path):
         sid = str(uuid.uuid4())[:8]
         config = load_config()
@@ -141,47 +149,52 @@ def add_script():
                 p = cron.split()
                 scheduler.add_job(run_script, 'cron', minute=p[0], hour=p[1], day=p[2], month=p[3], day_of_week=p[4], id=sid, args=[sid])
             except: pass
-    return redirect('/')
+    return redirect(url_for('index'))
 
 @app.route('/view_logs/<sid>')
+@login_required
 def view_logs(sid):
     config = load_config()
     name = "Manager Server" if sid == "manager" else config.get(sid, {}).get('name', 'Inconnu')
     return render_template('logs.html', sid=sid, name=name)
 
 @app.route('/raw_logs/<sid>')
+@login_required
 def raw_logs(sid):
     log_path = SERVER_LOG if sid == "manager" else os.path.join(LOG_DIR, f"{sid}.log")
     if os.path.exists(log_path):
         with open(log_path, "r", encoding='utf-8', errors='replace') as f: return f.read()
-    return "Aucun log disponible."
-
-@app.route('/logs/manager')
-def server_logs(): return redirect('/view_logs/manager')
+    return "Log indisponible."
 
 @app.route('/start/<sid>')
+@login_required
 def start(sid): 
     run_script(sid)
-    return redirect('/')
+    return redirect(url_for('index'))
 
 @app.route('/stop/<sid>')
+@login_required
 def stop(sid):
     if sid in processes:
         processes[sid].terminate()
         del processes[sid]
-    return redirect('/')
+    return redirect(url_for('index'))
 
 @app.route('/delete/<sid>')
+@login_required
 def delete_script(sid):
     config = load_config()
     if sid in config:
         if scheduler.get_job(sid): scheduler.remove_job(sid)
         del config[sid]
         save_config(config)
-    return redirect('/')
+    return redirect(url_for('index'))
+
+@app.route('/logs/manager')
+@login_required
+def server_logs(): return redirect(url_for('view_logs', sid='manager'))
 
 if __name__ == '__main__':
-    # Rechargement des jobs existants au démarrage
     cfg = load_config()
     for sid, s in cfg.items():
         if s.get('cron'):
