@@ -1,10 +1,7 @@
 {
-    "92258ab7": {
-        "filename": "script.py",
-        "cron": ""
-    },
-    "e00b9fd5": {
-        "filename": "script.py",
-        "cron": "*/5 * * * *"
+    "88799720": {
+        "path": "C:\\Users\\james\\Downloads\\script.py",
+        "cron": "*/5 * * * *",
+        "last_run": "2026-03-23 21:00:00"
     }
 }
