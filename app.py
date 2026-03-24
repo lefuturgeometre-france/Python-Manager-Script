@@ -78,22 +78,36 @@ def run_script(script_id):
     config = load_config()
     script = config.get(script_id)
     if not script or is_proc_running(script_id): return
+
     config[script_id]['last_run'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_config(config)
+
     log_path = os.path.join(LOG_DIR, f"{script_id}.log")
+    
     with open(log_path, "a", encoding='utf-8', errors='replace') as log_file:
         log_file.write(f"\n--- [START] {datetime.now()} ---\n")
+
+    # On prépare un environnement qui force l'UTF-8 partout
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"  # Force le mode UTF-8 de Python 3.7+
+
     try:
+        # On ouvre le fichier de log en mode "b" (binaire) pour l'écriture directe
+        # OU on garde le mode texte mais on blinde les paramètres de Popen
         proc = subprocess.Popen(
             ["python", os.path.basename(script['path'])],
             cwd=os.path.dirname(script['path']),
             stdout=open(log_path, "a", encoding='utf-8', errors='replace'),
-            stderr=subprocess.STDOUT, text=True, env=env
+            stderr=subprocess.STDOUT, 
+            text=True, 
+            env=env,
+            encoding='utf-8',       # FORCE le décodage du flux en UTF-8
+            errors='replace'        # REMPLACE les caractères illisibles au lieu de crasher
         )
         processes[script_id] = proc
-    except Exception as e: print(f"Erreur lancement {script_id}: {e}")
+    except Exception as e: 
+        print(f"Erreur lancement {script_id}: {e}")
 
 # --- ROUTES AUTHENTIFICATION ---
 
